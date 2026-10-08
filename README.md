@@ -88,9 +88,17 @@ URL or company name
  canonical Brand DNA  ─▶  outputs.ts  ─▶  guide data, AI context, change summary
 ```
 
+### Input handling (`src/lib/input.ts`)
+
+What is typed is cleaned before anything runs, in the browser (instant feedback) and again on the server:
+
+- **Address typos are fixed and reported:** broken prefixes (`htp://`, `http//`, `https:/`, `htttps://`, doubled `https://`), stray spaces and commas (`stripe . com`, `www,stripe,com`), double dots, surrounding quotes, trailing punctuation, uppercase, and common TLD slips (`.con`, `.cmo`, `.ocm`, `.vom`, `.c0m`, `.ogr`, ...). The progress page says what was corrected, for example *Using stripe.com (corrected .con to .com)*.
+- **Gibberish is rejected with a clear message:** keyboard mashing (`asdfghjkl`, `qwertyuiop`), repeated characters, repeating patterns, strings with almost no vowels or long consonant runs, digits only, symbols or emoji only, markup, and very long or many-word entries. Short names and acronyms (IBM, 3M, H&M, Nvidia, Tumblr) are accepted.
+- **Misspelled company names are matched fuzzily:** `strpe`, `notoin` and `linaer` resolve to Stripe, Notion and Linear (swapped letters count as one typo; the tolerance grows with the name's length), and the progress page notes *assuming a small typo*. If nothing matches convincingly but a result is loosely similar, the error offers it as a one-click *Did you mean …?* button instead of guessing.
+
 ### 1. Site Scout (`scout.ts`, TinyFish Fetch and Search)
 
-- Normalises the input. A company name is resolved with TinyFish Search; a URL is validated (public hosts only).
+- Normalises the input. A URL or bare domain is validated (public hosts only). A **company name** is resolved with TinyFish Search: results from directories, social sites and review sites are ignored, each remaining domain is scored by how well it matches the name, and the best one wins. If search finds nothing convincing, likely domains (`name.com`, `.io`, `.ai`, `.app`, …) are probed through Fetch. The progress page shows which site was matched, and a name that can't be resolved gets a clear error.
 - Fetches the homepage **live** (`ttl: 0`) as `html` with `links`, `image_links` and `page_metadata` turned on.
 - Scores same-site links by how much they say about a brand (about, product(s), platform, pricing, customers, blog, careers, contact) and reads up to **6** pages in one batch. It does not crawl everything.
 - If the homepage yields too few usable links, it falls back to TinyFish Search (`site:domain`) and common paths such as `/about` and `/pricing`.

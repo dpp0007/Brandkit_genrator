@@ -4,4 +4,4 @@ const headers = [
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
 ];
-export default { poweredByHeader: false, async headers() { return [{ source: "/(.*)", headers }]; } };
+export default { distDir: process.env.NEXT_DIST_DIR || ".next", poweredByHeader: false, async headers() { return [{ source: "/(.*)", headers }]; } };

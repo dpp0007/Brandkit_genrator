@@ -1,6 +1,6 @@
 // End-to-end API check against a running dev server. Usage: node scripts/e2e.mjs <tinyfishKey> <geminiKey> <url...>
 const [key, gkey, ...urls] = process.argv.slice(2);
-const B = "http://localhost:3000";
+const B = process.env.BASE || "http://localhost:3000";
 let cookie = "";
 const call = async (path, body, method = "POST") => {
   const r = await fetch(B + path, { method, headers: { "content-type": "application/json", cookie }, body: body ? JSON.stringify(body) : undefined });

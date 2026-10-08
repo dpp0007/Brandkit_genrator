@@ -5,7 +5,7 @@ import Link from "next/link";
 import KeyDialog from "@/components/KeyDialog";
 
 type Ev = { stage: string; status: "active" | "done" | "warn"; label: string; detail?: string };
-type Job = { id: string; url: string; status: "running" | "done" | "error"; events: Ev[]; brandId: string | null; error: { code: string; message: string; provider?: "tinyfish" | "gemini" } | null; diff: { colors: number; typography: number; messaging: number; changed: boolean } | null };
+type Job = { id: string; url: string; status: "running" | "done" | "error"; events: Ev[]; brandId: string | null; error: { code: string; message: string; provider?: "tinyfish" | "gemini"; suggestion?: string } | null; diff: { colors: number; typography: number; messaging: number; changed: boolean } | null };
 
 // Stages mirror the backend pipeline; labels/details are replaced by what actually happened.
 const STAGES: [string, string][] = [
@@ -59,7 +59,7 @@ function Explore({ params }: { params: Promise<{ id: string }> }) {
       <div className="eyebrow">TinyFish exploration</div>
       <h1 className="display mt-3 break-words">Exploring {host || "…"}</h1>
       <ul className="mt-12 divide-y divide-hairline-soft border-y border-hairline-soft">
-        {STAGES.map(([s, fallback]) => {
+        {[...(byStage.has("resolve") ? [["resolve", "Find the website"] as [string, string]] : []), ...STAGES].map(([s, fallback]) => {
           const e = byStage.get(s);
           const active = !err && e?.status === "active";
           const failed = err && !e;
@@ -81,6 +81,7 @@ function Explore({ params }: { params: Promise<{ id: string }> }) {
           <p className="mt-2">{err.message}</p>
           <div className="mt-6 flex gap-3">
             {err.code === "INVALID_KEY" ? <button className="btn" onClick={() => setKeyOpen(true)}>Replace key</button> : ["TIMEOUT", "INTERRUPTED", "RATE_LIMITED", "TINYFISH_ERROR", "TINYFISH_UNREACHABLE", "EXTRACTION_FAILED"].includes(err.code) && <button className="btn" onClick={retry}>Try again</button>}
+            {err.suggestion && <button className="btn" onClick={async () => { const res = await fetch("/api/explore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: err.suggestion, refresh }) }); const j = await res.json(); if (res.ok) r.replace(`/explore/${j.jobId}?refresh=${refresh ? 1 : 0}`); }}>Explore {err.suggestion.replace(/^https?:\/\/(www\.)?/, "")}</button>}
             <Link href="/" className="btn btn-ghost">Try another URL</Link>
           </div>
         </div>

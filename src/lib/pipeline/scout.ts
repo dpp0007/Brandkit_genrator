@@ -13,11 +13,25 @@ const PRIORITY: [RegExp, string, number][] = [
   [/^\/(contact|brand|press|design)/i, "contact", 4],
 ];
 const SKIP = /\.(pdf|png|jpe?g|gif|svg|zip|webp|mp4|xml|json|ico|css|js)$|\/(login|signin|sign-in|signup|auth|cart|checkout|legal|privacy|terms|cookie)/i;
-const SOCIAL = /(wikipedia|linkedin|facebook|twitter|x\.com|instagram|youtube|crunchbase|reddit|bloomberg|glassdoor)\./i;
 const bare = (h: string) => h.replace(/^www\./, "");
 
-export async function resolveTarget(key: string, input: string): Promise<string> {
-  const s = input.trim();
+const NOT_OFFICIAL = /(wikipedia|linkedin|facebook|twitter|x\.com|instagram|youtube|crunchbase|reddit|bloomberg|glassdoor|g2\.com|capterra|trustpilot|medium\.com|quora|pinterest|tiktok|forbes|techcrunch|producthunt|apps\.apple|play\.google|github\.com|yelp|indeed|zoominfo|pitchbook|owler|similarweb|alternativeto|softwareadvice|sourceforge|wikidata|imdb|amazon\.)/i;
+// Optimal string alignment distance (counts a swap of two neighbouring letters as one typo).
+function dl(a: string, b: string) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[a.length][b.length];
+}
+const compact = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Accepts a URL, a bare domain, or a company name. Names are resolved with TinyFish Search, scored for how well the
+// result's domain matches the name, and finally probed with common domain guesses. `note` reports what was chosen.
+export async function resolveTarget(key: string, input: string, note?: (msg: string) => void): Promise<string> {
+  const s = input.trim().replace(/\s+/g, " ");
   if (!s) throw new AppError("INVALID_URL", "Enter a website URL or a company name.");
   const looksLikeUrl = /^https?:\/\//i.test(s) || /^[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(s);
   if (looksLikeUrl) {
@@ -27,11 +41,47 @@ export async function resolveTarget(key: string, input: string): Promise<string>
       throw new AppError("INVALID_URL", "Enter a public website, for example https://company.com.");
     return u.origin;
   }
-  // Company name: resolve with TinyFish Search.
-  const hits = await tfSearch(key, `${s} official website`);
-  const hit = hits.find((h) => h.url && !SOCIAL.test(h.url));
-  if (!hit) throw new AppError("INVALID_URL", `We couldn't find a website for "${s}". Try entering its URL.`);
-  return new URL(hit.url).origin;
+  if (s.length < 2 || s.length > 80 || /[<>{}|\\]/.test(s)) throw new AppError("INVALID_URL", "Enter a website URL or a company name.");
+
+  // 1. TinyFish Search, two phrasings, scored by how well the domain matches the name.
+  const name = compact(s), words = s.toLowerCase().split(" ").map(compact).filter((w) => w.length > 1);
+  const seen = new Map<string, number>();
+  const typo = new Map<string, string>(), near = new Map<string, number>();
+  for (const q of [`${s} official website`, s]) {
+    const hits = await tfSearch(key, q);
+    hits.forEach((h, i) => {
+      try {
+        const u = new URL(h.url);
+        if (NOT_OFFICIAL.test(u.hostname)) return;
+        const stem = compact(bare(u.hostname).split(".").slice(0, -1).join("") || bare(u.hostname));
+        let score = Math.max(0, 6 - i) * 0.5;
+        const allow = name.length <= 3 ? 0 : name.length <= 6 ? 1 : 2; // typos tolerated, by name length
+        const dist = dl(stem, name);
+        if (stem === name) score += 6; else if (name.length >= 3 && (stem.startsWith(name) || stem.endsWith(name))) score += 4; else if (name.length >= 4 && stem.includes(name)) score += 2.5;
+        else if (words.length > 1 && words.every((w) => stem.includes(w))) score += 3;
+        else if (allow && dist <= allow) { score += 4.5; typo.set(u.origin, stem); } // "strpe" -> stripe, "notoin" -> notion
+        if (dist <= Math.max(2, Math.floor(name.length / 3))) near.set(u.origin, Math.min(near.get(u.origin) ?? 9, dist));
+        if (u.pathname === "/" || u.pathname === "") score += 1;
+        seen.set(u.origin, (seen.get(u.origin) ?? 0) + score);
+      } catch {}
+    });
+    if ([...seen.values()].some((v) => v >= 6)) break;
+  }
+  const best = [...seen.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (best && best[1] >= 2) { note?.(typo.has(best[0]) ? `Matched "${s}" to ${new URL(best[0]).hostname} (assuming a small typo)` : `Matched "${s}" to ${new URL(best[0]).hostname}`); return best[0]; }
+
+  // 2. Search found nothing convincing: probe likely domains through TinyFish Fetch.
+  const slug = compact(s);
+  if (slug.length >= 2) {
+    const guesses = ["com", "io", "ai", "app", "co", "so", "dev"].map((tld) => `https://${slug}.${tld}`);
+    const r = await tfFetch(key, guesses.slice(0, 7), { format: "markdown" });
+    const ok = guesses.map((g) => r.results.find((x) => x.url === g)).find((x) => x && (x.text?.length ?? 0) > 200);
+    if (ok) { const o = new URL(ok.final_url || ok.url).origin; note?.(`Matched "${s}" to ${new URL(o).hostname}`); return o; }
+  }
+  // Nothing convincing. If a result is only loosely similar, offer it as a suggestion instead of guessing.
+  const close = [...near.entries()].sort((a, b) => a[1] - b[1] || (seen.get(b[0]) ?? 0) - (seen.get(a[0]) ?? 0))[0];
+  if (close) throw new AppError("INVALID_URL", `We couldn't find "${s}". Did you mean ${new URL(close[0]).hostname.replace(/^www\./, "")}?`, 422, { suggestion: close[0] });
+  throw new AppError("INVALID_URL", `We couldn't find a website for "${s}". Check the spelling, or enter its web address, for example ${slug || "company"}.com.`);
 }
 
 function classify(path: string) {

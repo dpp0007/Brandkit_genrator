@@ -40,7 +40,14 @@ http.createServer(async (req, res) => {
       return req.url.includes("generateContent") ? json(res, 500, { error: "mock" }) : json(res, 200, { models: [] });
     }
     if (req.headers["x-api-key"] !== KEY) return json(res, 401, { error: { code: "INVALID_API_KEY" } });
-    if (req.method === "GET") return json(res, 200, { query: "", results: [], total_results: 0, page: 0 });
+    if (req.method === "GET") { // tiny typo-tolerant "search index" so name resolution can be tested
+      const q = (new URL(req.url, "http://x").searchParams.get("query") || "").toLowerCase().replace(/ official (website|site)$/, "");
+      const first = q.split(" ")[0].replace(/[^a-z0-9]/g, "");
+      const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) d[0][j] = j; for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + (a[i-1] === b[j-1] ? 0 : 1)); return d[a.length][b.length]; };
+      const index = ["stripe.com", "linear.app", "notion.so", "patagonia.com", "vercel.com", "figma.com"];
+      const hits = first.length < 3 ? [] : index.filter((d) => lev(d.split(".")[0], first) <= 2).map((d, i) => ({ position: i + 1, title: d, snippet: "", url: "https://" + d + "/" }));
+      return json(res, 200, { query: q, results: hits.length ? [{ position: 0, title: "wiki", snippet: "", url: "https://en.wikipedia.org/wiki/" + first }, ...hits] : [], total_results: hits.length, page: 0 });
+    }
     const { urls = [] } = await readBody(req);
     const results = [], errors = [];
     await Promise.all(urls.map(async (u) => { try { const o = await fetchOne(u); o.result ? results.push(o.result) : errors.push(o); } catch (e) { errors.push({ url: u, error: "target_unreachable" }); } }));
