@@ -26,6 +26,7 @@ export async function endSession() {
   if (t) await store.deleteSession(sha(t));
   c.delete(COOKIE);
 }
+export class UserError extends Error {}
 export type User = { id: string; email: string };
 export async function currentUser(): Promise<User | null> {
   const t = (await cookies()).get(COOKIE)?.value;
@@ -34,16 +35,16 @@ export async function currentUser(): Promise<User | null> {
 }
 export async function signUp(email: string, pw: string): Promise<User> {
   email = email.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("Enter a valid email address.");
-  if (pw.length < 8) throw new Error("Use a password of at least 8 characters.");
-  if (await store.userByEmail(email)) throw new Error("An account with this email already exists.");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new UserError("Enter a valid email address.");
+  if (pw.length < 8) throw new UserError("Use a password of at least 8 characters.");
+  if (await store.userByEmail(email)) throw new UserError("An account with this email already exists.");
   const id = uid();
   try { await store.createUser({ id, email, password_hash: hashPassword(pw) }); }
-  catch (e: any) { if (e?.code === 11000) throw new Error("An account with this email already exists."); throw e; } // two sign-ups racing on one email
+  catch (e: any) { if (e?.code === 11000) throw new UserError("An account with this email already exists."); throw e; } // two sign-ups racing on one email
   return { id, email };
 }
 export async function signIn(email: string, pw: string): Promise<User> {
   const r = await store.userByEmail(email.trim().toLowerCase());
-  if (!r || !verifyPassword(pw, r.password_hash)) throw new Error("Email or password is incorrect.");
+  if (!r || !verifyPassword(pw, r.password_hash)) throw new UserError("Email or password is incorrect.");
   return { id: r.id, email: r.email };
 }

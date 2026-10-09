@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "./auth";
+import { redact } from "./mongo-uri";
 
 export class AppError extends Error {
   constructor(public code: string, message: string, public status = 400, public extra: Record<string, string> = {}) { super(message); }
@@ -14,7 +15,7 @@ export async function requireUser() {
 export function handle(fn: () => Promise<Response>) {
   return fn().catch((e) => {
     if (e instanceof AppError) return json({ error: { code: e.code, message: e.message, ...e.extra } }, e.status);
-    console.error("[api]", e instanceof Error ? e.name : "error");
+    console.error("[api]", e instanceof Error ? `${e.name}${(e as any).code ? " " + (e as any).code : ""}: ${redact(String(e.message)).slice(0, 300)}` : "error"); // never logs connection strings
     return json({ error: { code: "INTERNAL", message: "Something went wrong on our side. Please try again." } }, 500);
   });
 }

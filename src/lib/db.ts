@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { MongoClient, Db } from "mongodb";
+import { normalizeMongoUri } from "./mongo-uri";
 
 // MongoDB Atlas storage. Collections: users, sessions, api_credentials, brands, brand_extractions, brand_evidence, jobs.
 // Brand DNA is stored as a JSON string (its design-token keys contain dots, which Mongo field names dislike).
@@ -8,7 +9,7 @@ export const now = () => new Date().toISOString();
 
 const g = globalThis as any;
 function connect(): Promise<Db> {
-  const uri = process.env.MONGODB_URI;
+  const uri = process.env.MONGODB_URI && normalizeMongoUri(process.env.MONGODB_URI);
   if (!uri) return Promise.reject(new Error("MONGODB_URI is not set. Add your MongoDB Atlas connection string to the environment."));
   const client = new MongoClient(uri, { maxPoolSize: 5, serverSelectionTimeoutMS: 10_000, appName: "brandmeld" });
   return client.connect().then(async () => {
