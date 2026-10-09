@@ -14,7 +14,7 @@ export function toGuide(dna: BrandDNA) {
   return {
     overview: { name: dna.brand.name, website: dna.brand.url, positioning: dna.brand.positioning, tagline: dna.brand.tagline, confidence: dna.confidence.overall, pages_explored: dna.meta.pages_explored, extracted_at: dna.meta.extracted_at },
     logo: { primary: dna.logo.primary?.value ?? null, variants: dna.logo.variants.map((v) => v.value), favicon: dna.logo.favicon?.value ?? null, confidence: dna.logo.primary?.confidence ?? 0 },
-    colors: { swatches: colorRows, gradients: dna.colors.gradients.map((g) => g.css) },
+    colors: { swatches: colorRows, gradients: dna.colors.gradients.map((g) => g.css).filter((c) => /^(linear|radial|conic)-gradient\([#a-zA-Z0-9%.,()\s\/-]+\)$/.test(c) && !/url\(|var\(|expression|@import|\\/i.test(c)) },
     typography: { heading: dna.typography.heading?.value ?? null, body: dna.typography.body?.value ?? null, mono: dna.typography.mono?.value ?? null, weights: dna.typography.weights?.value ?? [], hierarchy: dna.typography.hierarchy },
     visual_style: dna.visual_identity.patterns.map((p) => p.value),
     voice: { traits: dna.voice.tone.value, style: dna.voice.writing_style.map((f) => f.value), dos: dna.voice.dos.map((f) => f.value), donts: dna.voice.donts.map((f) => f.value) },

@@ -1,5 +1,5 @@
 import { store, now } from "./db";
-import { encrypt, decrypt } from "./crypto";
+import { encrypt, decrypt, assertSecret } from "./crypto";
 import { verifyKey } from "./tinyfish";
 import { verifyGeminiKey } from "./gemini";
 import { AppError } from "./http";
@@ -16,11 +16,12 @@ async function one(userId: string, p: Provider) {
   const r = await store.cred(userId, p);
   return r ? { connected: true, masked: `${r.prefix}••••••••••••${r.last4}`, lastVerifiedAt: r.last_verified_at } : { connected: false };
 }
-export const credentialStatus = async (userId: string) => ({ tinyfish: await one(userId, "tinyfish"), gemini: await one(userId, "gemini") });
+export const credentialStatus = async (userId: string) => { const [tinyfish, gemini] = await Promise.all([one(userId, "tinyfish"), one(userId, "gemini")]); return { tinyfish, gemini }; };
 
 export async function saveKey(userId: string, p: Provider, key: string) {
+  assertSecret(); // clear error before contacting the provider if the deployment is misconfigured
   key = key.trim();
-  if (key.length < 12 || /\s/.test(key)) throw new AppError("INVALID_KEY", `That doesn't look like a ${LABEL[p]} API key.`, 400, { provider: p });
+  if (key.length < 12 || key.length > 512 || !/^[\w\-.:+=\/~]+$/.test(key)) throw new AppError("INVALID_KEY", `That doesn't look like a ${LABEL[p]} API key.`, 400, { provider: p });
   await (p === "tinyfish" ? verifyKey(key) : verifyGeminiKey(key)); // throws INVALID_KEY / RATE_LIMITED / *_ERROR
   const prefix = p === "gemini" ? key.slice(0, 4) : key.includes("-") ? key.slice(0, key.indexOf("-") + 1) : key.includes("_") ? key.slice(0, key.indexOf("_") + 1) : key.slice(0, 3);
   const t = now();
@@ -32,7 +33,12 @@ export async function getKey(userId: string, p: Provider): Promise<string> {
   return decrypt(r.encrypted_key);
 }
 // Both keys are required for an exploration; reports whichever is missing first.
-export const getKeys = async (userId: string) => ({ tinyfish: await getKey(userId, "tinyfish"), gemini: await getKey(userId, "gemini") });
+export const getKeys = async (userId: string) => {
+  const [tinyfish, gemini] = await Promise.all([getKey(userId, "tinyfish").catch((e) => e), getKey(userId, "gemini").catch((e) => e)]);
+  if (tinyfish instanceof Error) throw tinyfish; // TinyFish is reported first when both are missing
+  if (gemini instanceof Error) throw gemini;
+  return { tinyfish, gemini };
+};
 
 export async function testKey(userId: string, p: Provider) {
   const k = await getKey(userId, p);

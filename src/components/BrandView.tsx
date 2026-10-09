@@ -31,8 +31,8 @@ function Rows({ items, numbered }: { items: string[]; numbered?: boolean }) {
   return <ol className="border-t border-hairline-soft">{items.map((x, i) => <li key={i} className="flex gap-5 border-b border-hairline-soft py-3.5"><span className="mono w-6 shrink-0 pt-0.5 text-slate">{numbered ? String(i + 1).padStart(2, "0") : "·"}</span><span className="text-ink-soft">{x}</span></li>)}</ol>;
 }
 
-export default function BrandView({ id }: { id: string }) {
-  const [d, setD] = useState<any>(null);
+export default function BrandView({ id, initial }: { id: string; initial?: any }) {
+  const [d, setD] = useState<any>(initial ?? null);
   const [err, setErr] = useState("");
   const [tab, setTab] = useState<"guide" | "preview" | "context" | "json">("guide");
   const [toast, setToast] = useState("");
@@ -41,7 +41,7 @@ export default function BrandView({ id }: { id: string }) {
   const ch = useSearchParams().get("changed")?.split(",").map(Number);
   const t = useRef<any>(null);
 
-  useEffect(() => { fetch(`/api/brands/${id}`).then(async (r) => (r.ok ? setD(await r.json()) : setErr((await r.json()).error?.message ?? "Not found"))); }, [id]);
+  useEffect(() => { if (!initial) fetch(`/api/brands/${id}`).then(async (r) => (r.ok ? setD(await r.json()) : setErr((await r.json()).error?.message ?? "Not found"))); }, [id]);
   useEffect(() => {
     if (!d || tab !== "guide") return;
     const io = new IntersectionObserver((es) => { const v = es.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]; if (v) setActive(v.target.id); }, { rootMargin: "-20% 0px -65% 0px" });

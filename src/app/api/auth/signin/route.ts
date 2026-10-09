@@ -3,7 +3,8 @@ import { handle, json, body, AppError, rateLimit, clientIp } from "@/lib/http";
 export const POST = (req: Request) => handle(async () => {
   rateLimit("signin:" + clientIp(req), 10, 60_000);
   const b = await body(req);
+  rateLimit("signin-acct:" + String(b.email ?? "").trim().toLowerCase().slice(0, 254), 8, 600_000); // slows distributed guessing against one account
   let u; try { u = await signIn(String(b.email ?? ""), String(b.password ?? "")); } catch (e: any) { throw e instanceof UserError ? new AppError("AUTH", e.message, 401) : e; }
-  await startSession(u.id);
+  await startSession(u);
   return json({ user: u });
 });

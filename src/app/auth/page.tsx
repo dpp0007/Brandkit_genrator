@@ -10,7 +10,8 @@ function Form() {
     e.preventDefault(); setBusy(true); setErr("");
     const f = new FormData(e.currentTarget);
     const res = await fetch(`/api/auth/${mode}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: f.get("email"), password: f.get("password") }) });
-    if (res.ok) { const next = q.get("next"); r.push(next && next.startsWith("/") ? next : "/"); r.refresh(); return; }
+    // `next` must be a same-site path: this blocks //evil.com and /\evil.com
+    if (res.ok) { const next = q.get("next"); r.push(next && /^\/(?![\/\\])/.test(next) ? next : "/"); r.refresh(); return; }
     setErr((await res.json().catch(() => null))?.error?.message ?? "Something went wrong."); setBusy(false);
   };
   return (

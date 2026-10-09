@@ -221,9 +221,14 @@ curl -X POST http://localhost:3000/api/context \
 - After saving, the browser only ever sees a mask such as `tf-••••••••••••9x4k`. The full key is never returned, never placed in localStorage, sessionStorage, URLs, client source or client env vars, and the input is cleared right after submission.
 - Keys are never logged and never included in error messages. Unknown errors become a generic message.
 - Deleting a key asks for confirmation. The dialog appears only when no key exists, the saved key is rejected, or the user chooses Replace.
-- Passwords are hashed with scrypt. Sessions are random tokens stored hashed, delivered as `httpOnly`, `SameSite=Lax` cookies (`Secure` in production) and expire after 30 days.
+- Passwords are hashed with scrypt. Sessions are HMAC-signed `httpOnly`, `SameSite=Lax` cookies (`Secure` in production) that expire after 30 days. They are verified without a database lookup, which keeps every page and API call fast; the trade-off is that sessions can't be revoked individually (rotating `BRANDMELD_SECRET` signs everyone out).
 - Rate limits: 5 sign-ups per 10 minutes and 10 sign-ins per minute per IP, and 30 explorations per hour per user.
-- Security headers (`X-Frame-Options`, `nosniff`, referrer and permissions policies) are set in `next.config.mjs`.
+- Security headers (`X-Frame-Options`, `nosniff`, HSTS, referrer and permissions policies, and a CSP covering framing, base-tag, form and plugin hijacking) are set in `next.config.mjs`.
+- **Database safety:** every value that reaches a Mongo query is checked to be a plain string, so operator payloads such as `{"$ne": null}` cannot be injected. Every brand, job and key lookup is scoped to the signed-in user's id, so one user cannot read or delete another's data.
+- **Cross-site requests:** state-changing API calls whose `Origin` is another site are rejected (`middleware.ts`), on top of `SameSite=Lax` cookies. In production the session cookie uses the `__Host-` prefix.
+- **Abuse limits:** sign-in is limited per IP and per account, sign-up per IP, and key saving, explorations and the three product endpoints per user. Request bodies are capped (32 KB), passwords and emails have length limits, and an unknown email takes as long to reject as a wrong password.
+- **Untrusted site content** (names, copy, gradients, logos) is only ever rendered as escaped text or as image sources, never as HTML, and gradient CSS is allow-listed before it reaches a `style` attribute.
+- Run `BASE=http://localhost:3100 node scripts/attack.mjs` against a **local** instance (with the mocks) to re-run the injection, access-control, forgery, brute-force and input-abuse checks.
 
 ---
 
@@ -233,8 +238,7 @@ curl -X POST http://localhost:3000/api/context \
 
 | Collection | Contents |
 |---|---|
-| `users` | `_id, email (unique), password_hash, created_at` |
-| `sessions` | Hashed session token as `_id`, `user_id`, `expires_at`. A TTL index lets Mongo delete expired sessions itself. |
+| `users` | `_id, email (unique), password_hash, created_at` (sessions are signed cookies, so there is no sessions collection) |
 | `api_credentials` | `user_id, provider, encrypted_key, last4, prefix, last_verified_at` (unique per user and provider) |
 | `brands` | `user_id, name, url, favicon` (unique per user and site) |
 | `brand_extractions` | `brand_id, version, brand_dna, status, created_at`: every analysis is kept, so history and diffs work |
@@ -363,3 +367,4 @@ Where the original brief and `DESIGN.md` differed (cream canvas, coral accent an
 | Saved keys stopped working after a redeploy | `BRANDMELD_SECRET` changed. Restore the old value, or have users re-enter their keys. |
 | "MONGODB_URI is not set" or a timeout connecting to the database | The connection string is missing, or Atlas Network Access does not allow your host's IP (use `0.0.0.0/0` for serverless). |
 | "BRANDMELD_SECRET must be set in production" | Add `BRANDMELD_SECRET` to the host's environment variables. |
+| `ENOENT … routes-manifest.json` (or another `.next` manifest) in the dev server | Fixed by design: `next dev` now writes to `.next-dev` and `next build` to `.next`, so building while the dev server runs is safe. On an older checkout, stop the server, delete `.next` and `.next-dev`, and start again. |

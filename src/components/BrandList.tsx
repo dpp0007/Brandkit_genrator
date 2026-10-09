@@ -5,12 +5,12 @@ import { ago, download, slug } from "@/lib/client";
 import { useExplorer } from "./useExplorer";
 
 type B = { id: string; name: string; url: string; favicon: string | null; updatedAt: string; versions: number; primary: string | null; tagline: string | null };
-export default function BrandList() {
-  const [brands, setBrands] = useState<B[] | null>(null);
+export default function BrandList({ initial }: { initial?: B[] }) {
+  const [brands, setBrands] = useState<B[] | null>(initial ?? null);
   const [note, setNote] = useState("");
   const { start, error, dialog } = useExplorer();
   const load = async () => setBrands((await (await fetch("/api/brands")).json()).brands ?? []);
-  useEffect(() => { load(); }, []);
+  useEffect(() => { if (!initial) load(); }, [initial]);
 
   const del = async (b: B) => { if (!confirm(`Delete ${b.name} and all its saved extractions?`)) return; await fetch(`/api/brands/${b.id}`, { method: "DELETE" }); load(); };
   const get = async (b: B) => (await fetch(`/api/brands/${b.id}`)).json();

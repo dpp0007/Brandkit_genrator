@@ -52,6 +52,17 @@ npm install
 npm run dev
 ```
 
+## Securing Atlas
+
+- Create the database user with the **`readWrite` role on the `brandmeld` database only** (Database Access → Edit → Built-in role → "Only read and write to any database" is too broad; choose *Specific privileges*), never an admin user.
+- Use a long random password (letters and numbers avoid URL-encoding problems). Rotate it if it was ever pasted into chat, email or a ticket.
+- Network Access has to allow `0.0.0.0/0` for Vercel, so that password is the lock. Optionally use Vercel's static-IP or Atlas PrivateLink options on paid plans to narrow it.
+- Never commit `.env` files (they are ignored in this repo).
+
+## Speed
+
+Match your **Vercel function region** to your **Atlas cluster region** (Vercel → Settings → Functions → Region; for example a Mumbai Atlas cluster pairs with `bom1`). Every database call crosses that distance, and a mismatch (functions in Washington, database in Mumbai) adds a few hundred milliseconds to each one.
+
 ## Notes
 
 - Health check: `GET /api/health` (it pings the database).

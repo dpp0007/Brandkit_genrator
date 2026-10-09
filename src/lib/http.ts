@@ -30,5 +30,6 @@ export function rateLimit(key: string, max: number, windowMs: number) {
 export const clientIp = (req: Request) => req.headers.get("x-forwarded-for")?.split(",")[0].trim() || "local";
 
 export async function body(req: Request): Promise<any> {
-  try { return await req.json(); } catch { throw new AppError("BAD_REQUEST", "Invalid request body.", 400); }
+  if (Number(req.headers.get("content-length") ?? 0) > 32_768) throw new AppError("TOO_LARGE", "That request is too large.", 413);
+  try { const j = await req.json(); return j && typeof j === "object" && !Array.isArray(j) ? j : {}; } catch { throw new AppError("BAD_REQUEST", "Invalid request body.", 400); }
 }
