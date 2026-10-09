@@ -1,4 +1,4 @@
-import { db, uid, now } from "./db";
+import { store, now } from "./db";
 import { encrypt, decrypt } from "./crypto";
 import { verifyKey } from "./tinyfish";
 import { verifyGeminiKey } from "./gemini";
@@ -12,11 +12,11 @@ export const provider = (p: unknown): Provider => {
 };
 const LABEL: Record<Provider, string> = { tinyfish: "TinyFish", gemini: "Gemini" };
 
-function one(userId: string, p: Provider) {
-  const r = db.prepare("SELECT prefix,last4,last_verified_at FROM api_credentials WHERE user_id=? AND provider=?").get(userId, p);
+async function one(userId: string, p: Provider) {
+  const r = await store.cred(userId, p);
   return r ? { connected: true, masked: `${r.prefix}••••••••••••${r.last4}`, lastVerifiedAt: r.last_verified_at } : { connected: false };
 }
-export const credentialStatus = (userId: string) => ({ tinyfish: one(userId, "tinyfish"), gemini: one(userId, "gemini") });
+export const credentialStatus = async (userId: string) => ({ tinyfish: await one(userId, "tinyfish"), gemini: await one(userId, "gemini") });
 
 export async function saveKey(userId: string, p: Provider, key: string) {
   key = key.trim();
@@ -24,23 +24,21 @@ export async function saveKey(userId: string, p: Provider, key: string) {
   await (p === "tinyfish" ? verifyKey(key) : verifyGeminiKey(key)); // throws INVALID_KEY / RATE_LIMITED / *_ERROR
   const prefix = p === "gemini" ? key.slice(0, 4) : key.includes("-") ? key.slice(0, key.indexOf("-") + 1) : key.includes("_") ? key.slice(0, key.indexOf("_") + 1) : key.slice(0, 3);
   const t = now();
-  db.prepare(`INSERT INTO api_credentials VALUES(?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(user_id,provider) DO UPDATE SET encrypted_key=excluded.encrypted_key,last4=excluded.last4,prefix=excluded.prefix,last_verified_at=excluded.last_verified_at,updated_at=excluded.updated_at`)
-    .run(uid(), userId, p, encrypt(key), key.slice(-4), prefix, t, t, t);
+  await store.saveCred({ user_id: userId, provider: p, encrypted_key: encrypt(key), last4: key.slice(-4), prefix, at: t });
 }
-export function getKey(userId: string, p: Provider): string {
-  const r = db.prepare("SELECT encrypted_key FROM api_credentials WHERE user_id=? AND provider=?").get(userId, p);
+export async function getKey(userId: string, p: Provider): Promise<string> {
+  const r = await store.cred(userId, p);
   if (!r) throw new AppError("NO_KEY", `Connect your ${LABEL[p]} API key to continue.`, 428, { provider: p });
   return decrypt(r.encrypted_key);
 }
 // Both keys are required for an exploration; reports whichever is missing first.
-export const getKeys = (userId: string) => ({ tinyfish: getKey(userId, "tinyfish"), gemini: getKey(userId, "gemini") });
+export const getKeys = async (userId: string) => ({ tinyfish: await getKey(userId, "tinyfish"), gemini: await getKey(userId, "gemini") });
 
 export async function testKey(userId: string, p: Provider) {
-  const k = getKey(userId, p);
+  const k = await getKey(userId, p);
   await (p === "tinyfish" ? verifyKey(k) : verifyGeminiKey(k));
-  db.prepare("UPDATE api_credentials SET last_verified_at=? WHERE user_id=? AND provider=?").run(now(), userId, p);
+  await store.touchCred(userId, p, now());
 }
-export function deleteKey(userId: string, p: Provider) {
-  db.prepare("DELETE FROM api_credentials WHERE user_id=? AND provider=?").run(userId, p);
+export async function deleteKey(userId: string, p: Provider) {
+  await store.deleteCred(userId, p);
 }

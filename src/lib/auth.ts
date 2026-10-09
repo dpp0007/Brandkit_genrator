@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { cookies } from "next/headers";
-import { db, uid, now } from "./db";
+import { store, uid } from "./db";
 
 const COOKIE = "bm_session";
 const sha = (s: string) => crypto.createHash("sha256").update(s).digest("hex");
@@ -17,33 +17,33 @@ function verifyPassword(pw: string, stored: string) {
 export async function startSession(userId: string) {
   const token = crypto.randomBytes(32).toString("base64url");
   const exp = Date.now() + 30 * 864e5;
-  db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(sha(token), userId, exp);
+  await store.createSession(sha(token), userId, exp);
   (await cookies()).set(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", expires: new Date(exp) });
 }
 export async function endSession() {
   const c = await cookies();
   const t = c.get(COOKIE)?.value;
-  if (t) db.prepare("DELETE FROM sessions WHERE token_hash=?").run(sha(t));
+  if (t) await store.deleteSession(sha(t));
   c.delete(COOKIE);
 }
 export type User = { id: string; email: string };
 export async function currentUser(): Promise<User | null> {
   const t = (await cookies()).get(COOKIE)?.value;
   if (!t) return null;
-  const r = db.prepare("SELECT u.id,u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?").get(sha(t), Date.now());
-  return r ? { id: r.id, email: r.email } : null;
+  return store.userBySession(sha(t));
 }
-export function signUp(email: string, pw: string): User {
+export async function signUp(email: string, pw: string): Promise<User> {
   email = email.trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error("Enter a valid email address.");
   if (pw.length < 8) throw new Error("Use a password of at least 8 characters.");
-  if (db.prepare("SELECT 1 FROM users WHERE email=?").get(email)) throw new Error("An account with this email already exists.");
+  if (await store.userByEmail(email)) throw new Error("An account with this email already exists.");
   const id = uid();
-  db.prepare("INSERT INTO users VALUES(?,?,?,?)").run(id, email, hashPassword(pw), now());
+  try { await store.createUser({ id, email, password_hash: hashPassword(pw) }); }
+  catch (e: any) { if (e?.code === 11000) throw new Error("An account with this email already exists."); throw e; } // two sign-ups racing on one email
   return { id, email };
 }
-export function signIn(email: string, pw: string): User {
-  const r = db.prepare("SELECT * FROM users WHERE email=?").get(email.trim().toLowerCase());
+export async function signIn(email: string, pw: string): Promise<User> {
+  const r = await store.userByEmail(email.trim().toLowerCase());
   if (!r || !verifyPassword(pw, r.password_hash)) throw new Error("Email or password is incorrect.");
   return { id: r.id, email: r.email };
 }

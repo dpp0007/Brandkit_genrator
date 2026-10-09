@@ -3,7 +3,7 @@ import ExploreForm from "@/components/ExploreForm";
 import HeroArt from "@/components/HeroArt";
 import Reveal from "@/components/Reveal";
 import { currentUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { store } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -30,19 +30,15 @@ const STEPS: [string, string, string][] = [
 export default async function Home({ searchParams }: { searchParams: Promise<{ url?: string }> }) {
   const { url } = await searchParams;
   const user = await currentUser();
-  const recent: { id: string; name: string; url: string; primary: string | null }[] = user
-    ? db.prepare(`SELECT b.id,b.name,b.url,(SELECT brand_dna FROM brand_extractions e WHERE e.brand_id=b.id AND status='complete' ORDER BY version DESC LIMIT 1) dna FROM brands b WHERE b.user_id=? ORDER BY b.updated_at DESC LIMIT 4`).all(user.id).map((r: any) => ({ id: r.id, name: r.name, url: r.url, primary: r.dna ? JSON.parse(r.dna).colors?.primary?.hex ?? null : null }))
-    : [];
+  const mine = user ? await store.listBrands(user.id, 4) : [];
+  const recent = mine.map((r) => ({ id: r.id, name: r.name, url: r.url, primary: r.dna ? (JSON.parse(r.dna).colors?.primary?.hex as string | undefined) ?? null : null }));
 
   // The hero specimen shows the signed-in user's latest real brand when there is one.
   let real: { name: string; colors: string[]; font: string | null; tone: string[]; conf: [string, number][] } | null = null;
-  if (user) {
-    const r: any = db.prepare("SELECT b.name,(SELECT brand_dna FROM brand_extractions e WHERE e.brand_id=b.id AND status='complete' ORDER BY version DESC LIMIT 1) dna FROM brands b WHERE b.user_id=? ORDER BY b.updated_at DESC LIMIT 1").get(user.id);
-    if (r?.dna) {
-      const d = JSON.parse(r.dna);
-      const colors = [d.colors?.primary?.hex, ...(d.colors?.secondary ?? []).map((c: any) => c.hex), ...(d.colors?.accent ?? []).map((c: any) => c.hex), ...(d.colors?.background ?? []).map((c: any) => c.hex)].filter(Boolean);
-      if (colors.length >= 2) real = { name: r.name, colors: [...new Set(colors)] as string[], font: d.typography?.heading?.value ?? d.typography?.body?.value ?? null, tone: d.voice?.tone?.value ?? [], conf: ([["Primary colour", d.colors?.primary?.confidence], ["Typeface", d.typography?.heading?.confidence ?? d.typography?.body?.confidence], ["Tagline", d.messaging?.tagline?.confidence]] as [string, number | undefined][]).filter((x): x is [string, number] => typeof x[1] === "number") };
-    }
+  if (mine[0]?.dna) {
+    const d = JSON.parse(mine[0].dna);
+    const colors = [d.colors?.primary?.hex, ...(d.colors?.secondary ?? []).map((c: any) => c.hex), ...(d.colors?.accent ?? []).map((c: any) => c.hex), ...(d.colors?.background ?? []).map((c: any) => c.hex)].filter(Boolean);
+    if (colors.length >= 2) real = { name: mine[0].name, colors: [...new Set(colors)] as string[], font: d.typography?.heading?.value ?? d.typography?.body?.value ?? null, tone: d.voice?.tone?.value ?? [], conf: ([["Primary colour", d.colors?.primary?.confidence], ["Typeface", d.typography?.heading?.confidence ?? d.typography?.body?.confidence], ["Tagline", d.messaging?.tagline?.confidence]] as [string, number | undefined][]).filter((x): x is [string, number] => typeof x[1] === "number") };
   }
 
   return (

@@ -1,3 +1,3 @@
-import { db } from "@/lib/db";
+import { store } from "@/lib/db";
 export const dynamic = "force-dynamic";
-export const GET = () => { db.prepare("SELECT 1").get(); return Response.json({ ok: true }); };
+export const GET = async () => { await store.ping(); return Response.json({ ok: true }); };

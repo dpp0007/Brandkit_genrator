@@ -31,12 +31,15 @@ The live site is explored with **TinyFish** (Fetch, Browser, Search). Voice and 
 
 ## Quick start
 
-Requires **Node 22.13 or newer** (it uses the built-in `node:sqlite`).
+Requires **Node 22 or newer** and a **MongoDB Atlas** cluster (the free tier is fine).
 
 ```bash
+cp .env.example .env.local     # set MONGODB_URI (and optionally BRANDMELD_SECRET)
 npm install
-npm run dev        # http://localhost:3000
+npm run dev                    # http://localhost:3000
 ```
+
+Get a connection string from Atlas (*Connect* → *Drivers*) and include a database name, for example `mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/brandmeld`. Collections and indexes are created automatically. See [DEPLOY.md](DEPLOY.md) for Atlas setup details.
 
 1. Create an account.
 2. Enter a website (or a company name) and click **Explore Brand**.
@@ -226,19 +229,19 @@ curl -X POST http://localhost:3000/api/context \
 
 ## Data model
 
-SQLite through Node's built-in `node:sqlite` (`<data dir>/brandmeld.db`). It was chosen for zero setup; the schema maps directly to Postgres/Supabase if you swap `src/lib/db.ts`.
+**MongoDB Atlas**, accessed through one small module (`src/lib/db.ts`, the `store` object). Collections and indexes are created on first use.
 
-| Table | Purpose |
+| Collection | Contents |
 |---|---|
-| `users` | `id, email, password_hash, created_at` |
-| `sessions` | Hashed session tokens with expiry |
-| `api_credentials` | `user_id, provider, encrypted_key, last4, prefix, last_verified_at` (one row per provider per user) |
-| `brands` | `user_id, name, url, favicon` (one row per site per user) |
-| `brand_extractions` | `brand_id, version, brand_dna (JSON), status, created_at`: every analysis is kept, so history and diffs work |
-| `brand_evidence` | One row per finding: `extraction_id, url, property, value, confidence, evidence` |
-| `jobs` | Exploration progress events and outcome (added beyond the original spec, to power the live progress view) |
+| `users` | `_id, email (unique), password_hash, created_at` |
+| `sessions` | Hashed session token as `_id`, `user_id`, `expires_at`. A TTL index lets Mongo delete expired sessions itself. |
+| `api_credentials` | `user_id, provider, encrypted_key, last4, prefix, last_verified_at` (unique per user and provider) |
+| `brands` | `user_id, name, url, favicon` (unique per user and site) |
+| `brand_extractions` | `brand_id, version, brand_dna, status, created_at`: every analysis is kept, so history and diffs work |
+| `brand_evidence` | One document per finding: `extraction_id, url, property, value, confidence, evidence` |
+| `jobs` | Exploration progress events and outcome (powers the live progress view; any server instance can serve it) |
 
-A job still `running` after 10 minutes is reported as interrupted (for example after a server restart).
+Brand DNA is stored as a JSON string, because its design-token keys contain dots (`color.primary`), which Mongo field names handle poorly. A job still `running` after 10 minutes is reported as interrupted (for example after a restart or a function timeout).
 
 ---
 
@@ -259,7 +262,8 @@ src/
     ExploreForm.tsx, useExplorer.tsx   Start an exploration, handle key prompts
     HeroArt.tsx, Reveal.tsx, Nav.tsx, Footer.tsx, Logo.tsx, BrandList.tsx
   lib/
-    db.ts crypto.ts auth.ts credentials.ts http.ts   Storage, encryption, auth, errors, rate limit
+    db.ts                     MongoDB Atlas storage (the `store` object)
+    crypto.ts auth.ts credentials.ts http.ts   Encryption, auth, keys, errors, rate limit
     tinyfish.ts gemini.ts                            Provider clients
     pipeline/
       scout.ts computed.ts visual.ts visualComputed.ts voice.ts
@@ -276,8 +280,9 @@ See `.env.example`.
 
 | Variable | Use |
 |---|---|
-| `BRANDMELD_DATA_DIR` | Folder for `brandmeld.db` and the generated key. Put it on a persistent disk in production. Default `./.data`. |
-| `BRANDMELD_SECRET` | Encrypts stored keys. **Set it explicitly in production and keep it**; if it changes, saved keys cannot be decrypted and users must re-enter them. If unset, a random secret is generated in the data dir. |
+| `MONGODB_URI` | **Required.** MongoDB Atlas connection string, including the database name. |
+| `MONGODB_DB` | Optional database name if it is not in the connection string. |
+| `BRANDMELD_SECRET` | Encrypts stored keys. **Required in production**; keep it, because if it changes saved keys cannot be decrypted and users must re-enter them. In local development, if unset, a random secret is generated in `./.data/secret.key`. |
 | `BRANDMELD_MODEL` | Gemini model. Default `gemini-3.5-flash-lite`. |
 | `TINYFISH_FETCH_URL`, `TINYFISH_SEARCH_URL`, `TINYFISH_BROWSER_URL`, `GEMINI_API_BASE` | **Development only.** Redirect the app to the local stand-ins. Leave unset in production. |
 
@@ -299,11 +304,13 @@ TINYFISH_BROWSER_URL=http://localhost:4011 GEMINI_API_BASE=http://localhost:4010
 npm run dev           # terminal 2
 ```
 
-Use TinyFish key `tf-mock-key-0000000000` and Gemini key `AIzaMockKey0000000000`. The mocks fetch real public pages, so they exercise the real pipeline.
+Use TinyFish key `tf-mock-key-0000000000` and Gemini key `AIzaMockKey0000000000`. The mocks fetch real public pages, so they exercise the real pipeline. The app itself still needs a `MONGODB_URI` (Atlas, or a local `mongod`).
 
 | Script | What it does |
 |---|---|
 | `node scripts/e2e.mjs <tinyfishKey> <geminiKey> <url…>` | Signup, key onboarding (including invalid and missing keys), explore, extract/guide/context, invalid URL, against a running server |
+| `node scripts/store-check.mjs` | Data layer through the API: duplicate sign-up, wrong password, key save/replace/delete, history, re-analyse versions, delete, sign-out |
+| `node scripts/names-check.mjs` | Typo and gibberish handling for names and addresses |
 | `node scripts/seed-demo.mjs <url…>` | Signs in as a local demo user, saves the mock keys, explores the URLs |
 | `TINYFISH_API_KEY=… node scripts/probe.mjs <url>` | Against **real** TinyFish: shows what Fetch returns (links, images, metadata) and whether your account can create a Browser session |
 
@@ -313,15 +320,13 @@ Run `probe.mjs` first on a new account. The mocks are a reading of the docs, not
 
 ## Deployment
 
-One Node process plus a SQLite file. Use a host with a **persistent disk** and a long-lived process (a VPS, Railway, Render, or Fly with a volume), not serverless: explorations run in the background for a minute or two.
+BrandMeld runs on **Vercel** (or any serverless host) and on any Node server, because all data lives in MongoDB Atlas.
 
-```bash
-npm ci
-npm run build
-BRANDMELD_SECRET=<long random string> BRANDMELD_DATA_DIR=/var/lib/brandmeld PORT=3000 npm start
-```
+1. Create an Atlas cluster, a database user, and allow network access (`0.0.0.0/0` for serverless hosts).
+2. Set two environment variables on the host: `MONGODB_URI` and `BRANDMELD_SECRET` (`openssl rand -hex 32`).
+3. Deploy, then check `/api/health` returns `{"ok":true}`.
 
-Details, including HTTPS, proxies and single-instance notes, are in [DEPLOY.md](DEPLOY.md).
+On Vercel, explorations run after the response returns: the explore route sets `maxDuration = 300` and uses Next's `after()` to keep the function alive until the run finishes, with progress written to MongoDB. Step-by-step instructions, including the Atlas setup and the plan-duration caveat, are in [DEPLOY.md](DEPLOY.md).
 
 ---
 
@@ -339,7 +344,7 @@ Where the original brief and `DESIGN.md` differed (cream canvas, coral accent an
 - **Brand-colour choice is heuristic.** Measured styles are accurate, but deciding which colour is "the brand" is a judgement; a site whose homepage is dominated by illustration colour can yield an unexpected primary.
 - **Pages read are capped** (home plus up to 6, with up to 2 extra rendered). Very large or heavily client-rendered sites may need a re-run.
 - **Sites that block bots or require login** return a clear error instead of a result.
-- **Single instance.** Running jobs and rate-limit counters live in process memory; a restart interrupts a job in progress. For several instances, move the DB to Postgres and the limiter to Redis.
+- **Rate limits are per instance** (in memory), so they are weaker on serverless. A restart or function timeout interrupts a job in progress, which then shows as "didn't finish". On Vercel the plan's function-duration cap must cover a run (often 1 to 3 minutes).
 - **Preview** shows tokens and tone in generic layouts, not the site's real design. Brand fonts load from Google Fonts when available there, otherwise a system sans is used.
 - **Re-analyse diff** is a simple count (colours, typography, messaging) over a structure that can support a richer diff.
 - Only an SVG site icon is provided (no `.ico` or Apple touch icon).
@@ -355,5 +360,6 @@ Where the original brief and `DESIGN.md` differed (cream canvas, coral accent an
 | "Rate limited" from Gemini | Free-tier quota. Wait a minute, or enable billing in Google AI Studio. |
 | "Your TinyFish daily free allowance is used up" | Fetch is free up to 1,000 URLs a day; add wallet balance or wait for the reset at 00:00 UTC. |
 | An exploration seems stuck, then says it didn't finish | The server restarted mid-run. Run it again. |
-| Saved keys stopped working after a redeploy | `BRANDMELD_SECRET` changed or the data dir moved. Restore them, or re-enter the keys. |
-| "database is locked" during the first build | Transient while build workers open the DB together; a busy timeout is set, and re-running the build clears it. |
+| Saved keys stopped working after a redeploy | `BRANDMELD_SECRET` changed. Restore the old value, or have users re-enter their keys. |
+| "MONGODB_URI is not set" or a timeout connecting to the database | The connection string is missing, or Atlas Network Access does not allow your host's IP (use `0.0.0.0/0` for serverless). |
+| "BRANDMELD_SECRET must be set in production" | Add `BRANDMELD_SECRET` to the host's environment variables. |

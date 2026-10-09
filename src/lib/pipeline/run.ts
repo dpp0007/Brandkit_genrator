@@ -1,4 +1,4 @@
-import { db, uid, now } from "../db";
+import { store, uid, now } from "../db";
 import { AppError } from "../http";
 import { getKeys } from "../credentials";
 import { resolveTarget, siteScout } from "./scout";
@@ -15,23 +15,22 @@ import { cleanInput } from "../input";
 const tick = () => new Promise<void>((r) => setImmediate(r));
 export type Result = { brandId: string; extractionId: string; dna: BrandDNA; cached: boolean; diff: ReturnType<typeof diffDna> | null };
 
-function latest(userId: string, origin: string) {
-  const b = db.prepare("SELECT * FROM brands WHERE user_id=? AND url=?").get(userId, origin);
+async function latest(userId: string, origin: string) {
+  const b = await store.brandByUrl(userId, origin);
   if (!b) return null;
-  const x = db.prepare("SELECT * FROM brand_extractions WHERE brand_id=? AND status='complete' ORDER BY version DESC LIMIT 2").all(b.id);
-  return { brand: b, rows: x };
+  return { brand: b, rows: await store.extractions(b.id, 2) };
 }
 
 export async function runExtraction(userId: string, input: string, emit: Emit, opts: { refresh?: boolean } = {}): Promise<Result> {
   const cleaned = cleanInput(input);
   if ("error" in cleaned) throw new AppError("INVALID_URL", cleaned.error);
   input = cleaned.value;
-  const { tinyfish: key, gemini } = getKeys(userId); // throws NO_KEY (428, with provider) if either is missing
+  const { tinyfish: key, gemini } = await getKeys(userId); // throws NO_KEY (428, with provider) if either is missing
   emit("resolve", "active", cleaned.note ?? "Finding the website");
   let matched = "";
   const origin = await resolveTarget(key, input, (m) => (matched = m));
   emit("resolve", "done", [cleaned.note, matched].filter(Boolean).join(". ") || `Using ${new URL(origin).hostname}`);
-  const prior = latest(userId, origin);
+  const prior = await latest(userId, origin);
   if (prior?.rows[0] && !opts.refresh) {
     return { brandId: prior.brand.id, extractionId: prior.rows[0].id, dna: JSON.parse(prior.rows[0].brand_dna), cached: true, diff: null };
   }
@@ -67,15 +66,12 @@ export async function runExtraction(userId: string, input: string, emit: Emit, o
   const dna = compile(scout, visual, voice, val);
   if (!dna.colors.primary && !dna.typography.body && !dna.messaging.tagline) throw new AppError("EXTRACTION_FAILED", "We reached the site but couldn't extract enough brand signal from it. Try another public URL.", 422);
 
-  const t = now();
   let brandId = prior?.brand.id as string | undefined;
-  if (!brandId) { brandId = uid(); db.prepare("INSERT INTO brands VALUES(?,?,?,?,?,?,?)").run(brandId, userId, dna.brand.name, origin, dna.brand.favicon, t, t); }
-  else db.prepare("UPDATE brands SET name=?,favicon=?,updated_at=? WHERE id=?").run(dna.brand.name, dna.brand.favicon, t, brandId);
-  const ver = (db.prepare("SELECT MAX(version) v FROM brand_extractions WHERE brand_id=?").get(brandId).v ?? 0) + 1;
+  if (!brandId) { brandId = uid(); await store.createBrand({ id: brandId, user_id: userId, name: dna.brand.name, url: origin, favicon: dna.brand.favicon }); }
+  else await store.updateBrand(brandId, dna.brand.name, dna.brand.favicon);
   const extractionId = uid();
-  db.prepare("INSERT INTO brand_extractions VALUES(?,?,?,?,?,?)").run(extractionId, brandId, ver, JSON.stringify(dna), "complete", t);
-  const ins = db.prepare("INSERT INTO brand_evidence VALUES(?,?,?,?,?,?,?)");
-  for (const f of dna.evidence.findings) ins.run(uid(), extractionId, f.evidence[0]?.url ?? origin, f.property, f.value, f.confidence, JSON.stringify(f.evidence));
+  await store.addExtraction({ id: extractionId, brand_id: brandId, version: await store.nextVersion(brandId), brand_dna: JSON.stringify(dna) });
+  await store.addEvidence(dna.evidence.findings.map((f) => ({ extraction_id: extractionId, url: f.evidence[0]?.url ?? origin, property: f.property, value: String(f.value), confidence: f.confidence, evidence: JSON.stringify(f.evidence) })));
   emit("compile", "done", partialNote(dna));
   const diff = prior?.rows[0] ? diffDna(JSON.parse(prior.rows[0].brand_dna), dna) : null;
   return { brandId, extractionId, dna, cached: false, diff };
@@ -83,35 +79,41 @@ export async function runExtraction(userId: string, input: string, emit: Emit, o
 const partialNote = (d: BrandDNA) => (d.meta.partial ? "Brand DNA ready (partial: some sources unavailable)" : "Brand DNA ready");
 
 // ---------- background jobs (progress is persisted so the UI reflects real stages) ----------
-export function startJob(userId: string, input: string, refresh: boolean) {
+// startJob creates the job row and returns { id, done }. The caller keeps the process alive until `done` settles
+// (the explore route hands it to Next's after(), which holds a serverless function open until it finishes).
+export async function startJob(userId: string, input: string, refresh: boolean) {
   const cleaned = cleanInput(input); // fast feedback for typos and gibberish, before any key prompt or job
   if ("error" in cleaned) throw new AppError("INVALID_URL", cleaned.error);
   const raw = input; // runExtraction re-cleans it so the progress page can show what was corrected
   input = cleaned.value;
-  getKeys(userId); // fail fast with NO_KEY before creating a job
+  await getKeys(userId); // fail fast with NO_KEY before creating a job
   const id = uid();
-  db.prepare("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?)").run(id, userId, input, "running", "[]", null, null, now());
+  await store.createJob({ id, user_id: userId, url: input });
   const events: any[] = [];
+  let chain: Promise<unknown> = Promise.resolve(); // keep progress writes in order
   const emit: Emit = (stage, status, label, detail) => {
     events.push({ stage, status, label, detail, at: now() });
-    db.prepare("UPDATE jobs SET events=? WHERE id=?").run(JSON.stringify(events), id);
+    const snap = JSON.stringify(events);
+    chain = chain.then(() => store.setJobEvents(id, snap)).catch(() => {});
   };
-  runExtraction(userId, raw, emit, { refresh })
-    .then((r) => db.prepare("UPDATE jobs SET status='done',brand_id=?,error=? WHERE id=?").run(r.brandId, r.diff ? JSON.stringify({ diff: r.diff }) : null, id))
-    .catch((e) => {
+  const done = runExtraction(userId, raw, emit, { refresh })
+    .then(async (r) => { await chain; await store.finishJob(id, "done", r.brandId, r.diff ? JSON.stringify({ diff: r.diff }) : null); })
+    .catch(async (e) => {
       const err = e instanceof AppError ? { code: e.code, message: e.message, ...e.extra } : { code: "EXTRACTION_FAILED", message: "Extraction failed unexpectedly. Please try again." };
       if (!(e instanceof AppError)) console.error("[job]", e?.name);
-      db.prepare("UPDATE jobs SET status='error',error=? WHERE id=?").run(JSON.stringify(err), id);
-    });
-  return id;
+      await chain;
+      await store.finishJob(id, "error", null, JSON.stringify(err));
+    })
+    .catch(() => {});
+  return { id, done };
 }
-export function getJob(userId: string, id: string) {
-  const j = db.prepare("SELECT * FROM jobs WHERE id=? AND user_id=?").get(id, userId);
+export async function getJob(userId: string, id: string) {
+  const j = await store.job(id, userId);
   if (!j) throw new AppError("NOT_FOUND", "Exploration not found.", 404);
-  // A restart kills in-process jobs. Flag stale ones by age (not at startup: dev servers and build workers open the DB many times).
+  // A restart or timeout kills in-flight jobs. Flag stale ones by age (not at startup: dev servers open the DB many times).
   if (j.status === "running" && Date.now() - new Date(j.created_at).getTime() > 10 * 60_000) {
-    j.status = "error"; j.error = JSON.stringify({ code: "INTERRUPTED", message: "This exploration didn't finish, probably because the server restarted. Please run it again." });
-    db.prepare("UPDATE jobs SET status='error',error=? WHERE id=?").run(j.error, id);
+    j.status = "error"; j.error = JSON.stringify({ code: "INTERRUPTED", message: "This exploration didn't finish, probably because the server restarted or timed out. Please run it again." });
+    await store.finishJob(id, "error", null, j.error);
   }
   const extra = j.error ? JSON.parse(j.error) : null;
   return { id: j.id, url: j.url, status: j.status, events: JSON.parse(j.events), brandId: j.brand_id, error: j.status === "error" ? extra : null, diff: j.status === "done" ? extra?.diff ?? null : null };

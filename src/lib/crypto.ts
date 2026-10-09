@@ -4,6 +4,7 @@ import path from "node:path";
 
 function masterKey(): Buffer {
   let s = process.env.BRANDMELD_SECRET;
+  if (!s && process.env.NODE_ENV === "production") throw new Error("BRANDMELD_SECRET must be set in production (serverless hosts have no persistent disk to keep a generated key).");
   if (!s) {
     const f = path.join(process.env.BRANDMELD_DATA_DIR || path.join(process.cwd(), ".data"), "secret.key");
     fs.mkdirSync(path.dirname(f), { recursive: true });
